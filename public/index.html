@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nvidia-smi watcher</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 13px; display: flex; gap: 14px; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 6px; }
+  .dot.err { background: var(--red); }
+  main { padding: 24px; max-width: 1280px; margin: 0 auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 16px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin: 9px 0; }
+  .bar-label { width: 118px; font-size: 13px; color: var(--muted); flex-shrink: 0; }
+  .bar-track {
+    flex: 1; height: 10px; background: #21262d; border-radius: 5px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 5px; background: var(--accent); transition: width .4s ease; }
+  .bar-fill.warn { background: var(--yellow); }
+  .bar-fill.hot { background: var(--red); }
+  .bar-val { width: 92px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 14px; margin-top: 12px; }
+  .kv div { font-size: 13px; }
+  .kv span { color: var(--muted); display: block; font-size: 11px; }
+  section.proc { margin-top: 26px; }
+  section.proc h2 { font-size: 15px; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; background: #1c2128; }
+  tr:last-child td { border-bottom: none; }
+  .empty { padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }
+  .error-banner {
+    display: none;
+    background: rgba(248, 81, 73, .12);
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 10px 16px;
+    border-radius: 8px;
+    margin-bottom: 18px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>nvidia-smi watcher</h1>
+  <div class="meta">
+    <span><span id="statusDot" class="dot"></span><span id="statusText">接続中…</span></span>
+    <span id="driver"></span>
+    <span id="updated"></span>
+  </div>
+</header>
+<main>
+  <div id="errorBanner" class="error-banner"></div>
+  <div id="gpuGrid" class="grid"></div>
+  <section class="proc">
+    <h2>GPU プロセス</h2>
+    <table id="procTable">
+      <thead>
+        <tr><th>PID</th><th>GPU</th><th>プロセス名</th><th>VRAM 使用量</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div id="procEmpty" class="empty">実行中の GPU プロセスはありません</div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmtMiB(v) {
+  if (v == null) return 'N/A';
+  return v >= 1024 ? (v / 1024).toFixed(1) + ' GiB' : Math.round(v) + ' MiB';
+}
+function barClass(kind, pct) {
+  if (pct == null) return '';
+  if (kind === 'temp') return pct >= 85 ? 'hot' : pct >= 70 ? 'warn' : '';
+  return pct >= 90 ? 'hot' : pct >= 70 ? 'warn' : '';
+}
+
+function gpuCard(g) {
+  const memPct = g.memTotalMiB && g.memUsedMiB != null
+    ? (g.memUsedMiB / g.memTotalMiB * 100) : null;
+  const powerPct = g.powerLimitW && g.powerW != null
+    ? (g.powerW / g.powerLimitW * 100) : null;
+  const rows = [
+    ['GPU 使用率', g.utilGpuPct, '%', 'util'],
+    ['メモリ使用率', memPct, '', 'mem'],
+    ['温度', g.tempC, '°C', 'temp'],
+    ['消費電力', powerPct, '', 'power'],
+    ['ファン回転数', g.fanPct, '%', 'fan'],
+  ];
+  const bars = rows.map(([label, val, unit, kind]) => {
+    if (val == null) return `<div class="bar-row"><span class="bar-label">${label}</span><span class="bar-val">N/A</span></div>`;
+    const pct = Math.max(0, Math.min(100, val));
+    const display = kind === 'power' ? `${Math.round(val)} W` : (kind === 'temp' ? Math.round(val) + ' °C' : Math.round(val) + unit);
+    return `<div class="bar-row">
+      <span class="bar-label">${label}</span>
+      <div class="bar-track"><div class="bar-fill ${barClass(kind, val)}" style="width:${pct}%"></div></div>
+      <span class="bar-val">${display}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="card">
+    <h2>GPU ${g.index} — ${escapeHtml(g.name)}</h2>
+    <div class="sub">VRAM: ${fmtMiB(g.memUsedMiB)} / ${fmtMiB(g.memTotalMiB)}</div>
+    ${bars}
+    <div class="kv">
+      <div><span>グラフィックスクロック</span>${g.clockGraphicsMHz != null ? g.clockGraphicsMHz + ' MHz' : 'N/A'}</div>
+      <div><span>メモリクロック</span>${g.clockMemoryMHz != null ? g.clockMemoryMHz + ' MHz' : 'N/A'}</div>
+      <div><span>電力上限</span>${g.powerLimitW != null ? Math.round(g.powerLimitW) + ' W' : 'N/A'}</div>
+    </div>
+  </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/status', { cache: 'no-store' });
+    const json = await res.json();
+    if (json.error) throw new Error(json.error);
+    render(json);
+    $('statusDot').classList.remove('err');
+    $('statusText').textContent = '正常';
+    $('errorBanner').style.display = 'none';
+  } catch (err) {
+    $('statusDot').classList.add('err');
+    $('statusText').textContent = 'エラー';
+    const banner = $('errorBanner');
+    banner.textContent = 'nvidia-smi の取得に失敗しました: ' + err.message;
+    banner.style.display = 'block';
+  }
+}
+
+function render(data) {
+  $('gpuGrid').innerHTML = data.gpus.map(gpuCard).join('');
+  const driver = data.gpus[0] && data.gpus[0].driverVersion;
+  if (driver) $('driver').textContent = 'Driver ' + driver;
+  $('updated').textContent = new Date(data.timestamp).toLocaleTimeString('ja-JP');
+
+  const tbody = document.querySelector('#procTable tbody');
+  if (!data.processes.length) {
+    tbody.innerHTML = '';
+    $('procEmpty').style.display = 'block';
+    $('procTable').style.display = 'none';
+  } else {
+    $('procEmpty').style.display = 'none';
+    $('procTable').style.display = 'table';
+    tbody.innerHTML = data.processes.map((p) => `<tr>
+      <td>${p.pid}</td>
+      <td>GPU ${p.gpuIndex}</td>
+      <td>${escapeHtml(p.name)}</td>
+      <td>${fmtMiB(p.memMiB)}</td>
+    </tr>`).join('');
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
