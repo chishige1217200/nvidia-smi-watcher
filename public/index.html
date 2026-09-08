@@ -147,7 +147,7 @@ function gpuCard(g) {
     <div class="sub">VRAM: ${fmtMiB(g.memUsedMiB)} / ${fmtMiB(g.memTotalMiB)}</div>
     ${bars}
     <div class="kv">
-      <div><span>グラフィックスクロック</span>${g.clockGraphicsMHz != null ? g.clockGraphicsMHz + ' MHz' : 'N/A'}</div>
+      <div><span>GPU クロック</span>${g.clockGraphicsMHz != null ? g.clockGraphicsMHz + ' MHz' : 'N/A'}</div>
       <div><span>メモリクロック</span>${g.clockMemoryMHz != null ? g.clockMemoryMHz + ' MHz' : 'N/A'}</div>
       <div><span>電力上限</span>${g.powerLimitW != null ? Math.round(g.powerLimitW) + ' W' : 'N/A'}</div>
     </div>
